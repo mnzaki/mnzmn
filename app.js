@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     const LIVE_STREAM_URL = ""; // Example: "https://example.com/live.m3u8"; Set to "" to test fallback
+    const videoPlayer = document.getElementById('main-video-player');
     let fullArchiveData = []; // To store archive data globally within this scope
 
     let currentMode = 'AUTO'; // Possible values: 'AUTO', 'MANUAL_ARCHIVE'
@@ -437,4 +438,51 @@ function setupVideoPlayer() {
     displayArchive();
 
     // Other functions like setupVideoPlayer will be added later
+
+    if (videoPlayer) {
+        videoPlayer.addEventListener('play', () => {
+            if (currentMode === 'AUTO') {
+                const isPlayingLive = videoPlayer.currentSrc === LIVE_STREAM_URL && LIVE_STREAM_URL !== "";
+                // Check if currentSrc is part of any known archive file names (ignoring #t=...)
+                const currentBaseSrcWithoutFragment = videoPlayer.currentSrc.split('#')[0];
+                const isPlayingKnownArchive = fullArchiveData.some(rec => currentBaseSrcWithoutFragment.endsWith(`recordings/${rec.filename}`));
+
+
+                if (!isPlayingLive && isPlayingKnownArchive) {
+                    // User pressed play while in AUTO mode on an archive video.
+                    // Let's check if we should jump to a more current part of the auto-program.
+                    console.log("Play event in AUTO mode on archive. Recalculating ideal playback point.");
+
+                    const secondsNow = getSecondsIntoCurrentUTCHour();
+                    const playbackInfo = getPlaybackForSecond(secondsNow, fullArchiveData);
+
+                    if (playbackInfo && playbackInfo.recording) {
+                        const newTargetFile = `recordings/${playbackInfo.recording.filename}`;
+                        const newTargetOffset = playbackInfo.offset;
+
+                        const currentFile = currentBaseSrcWithoutFragment;
+                        const currentOffset = videoPlayer.currentTime;
+
+                        // Define a threshold for "significant difference"
+                        // e.g., if it's a different file OR the offset difference is more than X seconds (e.g., 15s)
+                        const offsetDifferenceThreshold = 15; // seconds
+
+                        // Need to ensure currentFile is comparable to newTargetFile (e.g. both relative to site root or same base)
+                        // currentFile might be absolute (http://.../recordings/file.mp4)
+                        // newTargetFile is relative (recordings/file.mp4)
+                        // A simple way: check if currentFile.endsWith(newTargetFile)
+                        if (!currentFile.endsWith(newTargetFile) || Math.abs(currentOffset - newTargetOffset) > offsetDifferenceThreshold) {
+                            console.log(`Significant difference detected. Current: ${currentFile} @ ${currentOffset.toFixed(0)}s. New target: ${newTargetFile} @ ${newTargetOffset.toFixed(0)}s. Updating source.`);
+                            const newSourceUrl = `${newTargetFile}#t=${newTargetOffset}`;
+                            setVideoPlayerSource(newSourceUrl, true);
+                        } else {
+                            // console.log("Difference not significant. Resuming existing playback point.");
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        console.error("Video player element not found for attaching 'play' event listener.");
+    }
 });

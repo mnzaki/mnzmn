@@ -76,3 +76,31 @@ footer {
     font-size: 0.8em;
     margin-top: 2em;
 }
+
+/* For list items that are clickable */
+.clickable {
+    cursor: pointer;
+}
+
+.clickable:hover {
+    background-color: #e9e9e9; /* Slightly different hover for general clickable vs archive li */
+}
+
+/* Style for the currently active/playing list item */
+#archive-list li.active-list-item {
+    background-color: #d1eaff; /* A distinct background color for active item */
+    font-weight: bold;
+    color: #0056b3; /* Darker text color for active item for contrast */
+}
+
+#archive-list li.active-list-item:hover {
+    background-color: #bacee0; /* Slightly different hover for active item */
+}
+
+/* Specific styling for the "NOW - Auto Program" button if needed, */
+/* beyond the general .active-list-item styling if it's active. */
+/* For example, if it needs a different base style than other li elements. */
+#auto-mode-trigger {
+    /* Example: border-top: 2px solid #007bff; */
+    /* color: #007bff; */
+}

@@ -9,6 +9,207 @@ document.addEventListener('DOMContentLoaded', function() {
     const LIVE_STREAM_URL = ""; // Example: "https://example.com/live.m3u8"; Set to "" to test fallback
     let fullArchiveData = []; // To store archive data globally within this scope
 
+    let currentMode = 'AUTO'; // Possible values: 'AUTO', 'MANUAL_ARCHIVE'
+    let liveCheckIntervalId = null;
+    const LIVE_CHECK_INTERVAL = 15000; // 15 seconds for checking live stream status
+
+function setVideoPlayerSource(sourceUrl, isArchive) {
+    const videoPlayer = document.getElementById('main-video-player');
+    if (!videoPlayer) {
+        console.error("Video player element not found in setVideoPlayerSource.");
+        return;
+    }
+
+    let fullSourceUrl = sourceUrl;
+    if (isArchive && !sourceUrl.includes('#t=')) {
+        fullSourceUrl = `${sourceUrl}#t=0`; // Default to start if no time fragment
+    }
+
+    console.log(`Setting video source to: ${fullSourceUrl}`);
+    videoPlayer.src = fullSourceUrl;
+    videoPlayer.load(); // Load the new source
+    videoPlayer.play().then(() => {
+        if (isArchive) {
+            console.log(`Playing archive: ${fullSourceUrl}`);
+            // You could update a UI element here to show "Playing Archive"
+        } else {
+            console.log(`Playing live: ${fullSourceUrl}`);
+            // You could update a UI element here to show "Playing Live"
+        }
+    }).catch(e => {
+        console.error(`Error playing ${fullSourceUrl}:`, e);
+        // Optionally set a poster or display an error message on the player
+        // videoPlayer.poster = 'path/to/error_poster.jpg';
+    });
+}
+
+function playLiveStream() {
+    if (!LIVE_STREAM_URL) {
+        console.warn("playLiveStream called but LIVE_STREAM_URL is not set.");
+        return;
+    }
+    console.log("Attempting to switch to LIVE stream.");
+    setVideoPlayerSource(LIVE_STREAM_URL, false);
+    // Future: Update UI element to indicate "LIVE" status clearly
+}
+
+function playArchiveFallback(reason) {
+    console.log(`Switching to archive fallback. Reason: ${reason}`);
+
+    if (!fullArchiveData || fullArchiveData.length === 0) {
+        console.warn("playArchiveFallback called but fullArchiveData is empty.");
+        // Optionally set a poster or display an error message on the player
+        const videoPlayer = document.getElementById('main-video-player');
+        if (videoPlayer) videoPlayer.poster = 'path/to/no_archive_data_poster.jpg'; // Placeholder
+        return;
+    }
+
+    const secondsNow = getSecondsIntoCurrentUTCHour();
+    const playbackInfo = getPlaybackForSecond(secondsNow, fullArchiveData); // fullArchiveData is sorted oldest first
+
+    if (playbackInfo && playbackInfo.recording && typeof playbackInfo.offset === 'number') {
+        const sourceUrl = `recordings/${playbackInfo.recording.filename}#t=${playbackInfo.offset}`;
+        setVideoPlayerSource(sourceUrl, true);
+        // Future: Update UI element to indicate "Playing Archive Program" or similar
+    } else {
+        console.error("Could not determine archive video to play from playArchiveFallback.");
+        // Optionally set a poster or display an error message on the player
+        const videoPlayer = document.getElementById('main-video-player');
+        if (videoPlayer) videoPlayer.poster = 'path/to/fallback_error_poster.jpg'; // Placeholder
+    }
+}
+
+async function checkLiveStream() {
+    if (!LIVE_STREAM_URL) {
+        // console.log("checkLiveStream: LIVE_STREAM_URL is not set.");
+        return false; // No URL, so definitely not live
+    }
+
+    try {
+        // Using 'HEAD' can be lighter if server supports it and for simple up/down check.
+        // However, 'GET' might be more reliable for some stream types if HEAD isn't well-supported.
+        // For HLS/DASH, fetching a small part of the manifest or a segment might be better,
+        // but for a generic URL, a HEAD or GET is a starting point.
+        // 'no-store' attempts to bypass browser cache for this check.
+        const response = await fetch(LIVE_STREAM_URL, { method: 'HEAD', cache: 'no-store', mode: 'cors' });
+
+        // response.ok is true if status is 200-299.
+        // Some live streams might return redirects (3xx) before actual content,
+        // fetch handles redirects by default.
+        if (response.ok) {
+            // console.log("checkLiveStream: Live stream appears to be active.", response.status);
+            return true;
+        } else {
+            // console.log("checkLiveStream: Live stream check failed or stream not active.", response.status, response.statusText);
+            return false;
+        }
+    } catch (error) {
+        // Network error, server down, CORS issue etc.
+        // console.error("checkLiveStream: Error during live stream check:", error.message);
+        return false;
+    }
+}
+
+async function updateAutoMode() {
+    if (currentMode !== 'AUTO') {
+        // console.log("updateAutoMode: Not in AUTO mode, skipping check.");
+        return;
+    }
+
+    // console.log("updateAutoMode: Checking stream status...");
+    const videoPlayer = document.getElementById('main-video-player');
+    if (!videoPlayer) {
+        console.error("updateAutoMode: Video player not found.");
+        return;
+    }
+
+    const isActuallyLive = await checkLiveStream();
+    const isPlayingLiveCurrently = videoPlayer.currentSrc === LIVE_STREAM_URL && LIVE_STREAM_URL !== "";
+    // A more robust check for "playing archive" might involve checking if currentSrc.startsWith('recordings/')
+    // or matching against fullArchiveData filenames.
+    // For now, we assume if not playing LIVE_STREAM_URL, it's either playing archive or nothing relevant to this logic.
+
+    if (isActuallyLive) {
+        if (!isPlayingLiveCurrently) {
+            console.log("updateAutoMode: Live stream is active and we are not playing it. Switching to live.");
+            playLiveStream();
+        } else {
+            // console.log("updateAutoMode: Live stream active and already playing it. No change.");
+        }
+    } else { // Stream is not live
+        if (isPlayingLiveCurrently) {
+            console.log("updateAutoMode: Live stream is NOT active, but we were playing it. Switching to archive fallback.");
+            playArchiveFallback("Live stream ended or became unavailable");
+        } else {
+            // console.log("updateAutoMode: Live stream NOT active, and not currently playing it. Ensure archive is playing if player is idle or ended.");
+            // This case handles if the player is idle (e.g. after a manual pause, or video ended)
+            // and auto mode should ensure something is playing.
+            // It also covers the initial startup scenario if live isn't immediately available.
+            if (videoPlayer.paused || videoPlayer.ended || !videoPlayer.currentSrc.startsWith("recordings/")) {
+                 // Or if currentSrc is not one of our archive videos (e.g. some error/blank page)
+                 // Avoids repeatedly calling playArchiveFallback if it's already correctly playing an archive segment.
+                 const currentBaseSrc = videoPlayer.currentSrc.split('#')[0];
+                 const isPlayingKnownArchive = fullArchiveData.some(rec => `recordings/${rec.filename}` === currentBaseSrc);
+
+                 if(!isPlayingKnownArchive || videoPlayer.ended) {
+                    console.log("updateAutoMode: Player idle or ended on non-live content, ensuring archive fallback.");
+                    playArchiveFallback("Ensuring archive playback in auto mode");
+                 }
+            }
+        }
+    }
+}
+
+function startAutoMode() {
+    console.log("Starting AUTO mode.");
+    currentMode = 'AUTO';
+
+    if (liveCheckIntervalId) {
+        clearInterval(liveCheckIntervalId);
+        liveCheckIntervalId = null;
+    }
+
+    updateAutoMode(); // Call once immediately to set initial state
+
+    liveCheckIntervalId = setInterval(updateAutoMode, LIVE_CHECK_INTERVAL);
+
+    // UI Update: Highlight "NOW - Auto Program" and unhighlight others
+    const archiveListItems = document.querySelectorAll('#archive-list li');
+    archiveListItems.forEach(item => {
+        if (item.id === 'auto-mode-trigger') { // Assuming 'auto-mode-trigger' is the ID for "NOW" item
+            item.classList.add('active-list-item');
+        } else {
+            item.classList.remove('active-list-item');
+        }
+    });
+    // If "NOW" item doesn't exist yet or has a different ID, this needs adjustment later
+    // when the "NOW" item is dynamically added. For now, this is a placeholder for UI update.
+}
+
+function playManualArchive(recordingFilename, listItemElement) {
+    console.log(`Switching to MANUAL_ARCHIVE mode. Playing: ${recordingFilename}`);
+    currentMode = 'MANUAL_ARCHIVE';
+
+    if (liveCheckIntervalId) {
+        clearInterval(liveCheckIntervalId);
+        liveCheckIntervalId = null;
+        console.log("Cleared live check interval due to manual selection.");
+    }
+
+    const sourceUrl = `recordings/${recordingFilename}`;
+    // setVideoPlayerSource will append #t=0 by default if not present
+    setVideoPlayerSource(sourceUrl, true);
+
+    // UI Update: Highlight the selected item and unhighlight others
+    const archiveListItems = document.querySelectorAll('#archive-list li');
+    archiveListItems.forEach(item => {
+        item.classList.remove('active-list-item');
+    });
+    if (listItemElement) {
+        listItemElement.classList.add('active-list-item');
+    }
+}
+
     // PRNG (sfc32)
     function sfc32(a, b, c, d) {
         return function() {
@@ -74,49 +275,85 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Function to fetch and display archive
-    async function displayArchive() {
-        const archiveListElement = document.getElementById('archive-list');
-        if (!archiveListElement) {
-            console.error('Archive list element not found.');
-            return;
-        }
-
-        try {
-            const response = await fetch('recordings/index.json');
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            const archiveData = await response.json();
-
-            // Populate fullArchiveData, sorted oldest first for playback logic
-            fullArchiveData = [...archiveData].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-            // Sort recordings for display by timestamp, newest first
-            const displaySortedArchive = [...archiveData].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-            archiveListElement.innerHTML = ''; // Clear existing items
-
-            displaySortedArchive.forEach(recording => {
-                const listItem = document.createElement('li');
-
-                // Format timestamp: YYYY-MM-DD HH:MM
-                const date = new Date(recording.timestamp);
-                const formattedTimestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-
-                listItem.textContent = `${formattedTimestamp} - ${recording.title}`;
-                // Add a data attribute for the filename, could be useful later
-                listItem.dataset.filename = recording.filename;
-                archiveListElement.appendChild(listItem);
-            });
-
-            // After archive is loaded and processed:
-            setupVideoPlayer(); // This function will be created next and will use getPlaybackForHour
-
-        } catch (error) {
-            console.error('Failed to load or display archive:', error);
-            archiveListElement.innerHTML = '<li>Failed to load recordings.</li>';
-        }
+// Keep the existing `displayArchive` function structure, but make these modifications:
+async function displayArchive() {
+    const archiveListElement = document.getElementById('archive-list');
+    if (!archiveListElement) {
+        console.error('Archive list element not found.');
+        return;
     }
+
+    // Clear existing items, including any previous "NOW" item
+    archiveListElement.innerHTML = '';
+
+    // 1. Prepend "NOW - Auto Program" item
+    const nowPlayingItem = document.createElement('li');
+    nowPlayingItem.textContent = 'NOW - Auto Program';
+    nowPlayingItem.id = 'auto-mode-trigger'; // ID for styling and selection by startAutoMode
+    nowPlayingItem.classList.add('clickable'); // General class for clickable items
+    nowPlayingItem.addEventListener('click', () => {
+        startAutoMode(); // When clicked, start auto mode
+    });
+    archiveListElement.appendChild(nowPlayingItem);
+
+    try {
+        const response = await fetch('recordings/index.json');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const fetchedArchiveData = await response.json(); // Renamed to avoid conflict
+
+        // Store the original fetched order or a specific sort order if needed for playback logic
+        // For playback accumulation, we need oldest first.
+        fullArchiveData = [...fetchedArchiveData].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+        // Sort recordings by timestamp, newest first for display
+        const displaySortedArchive = [...fetchedArchiveData].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        displaySortedArchive.forEach(recording => {
+            const listItem = document.createElement('li');
+            listItem.classList.add('clickable'); // General class for clickable items
+
+            const date = new Date(recording.timestamp);
+            const formattedTimestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+            listItem.textContent = `${formattedTimestamp} - ${recording.title}`;
+            listItem.dataset.filename = recording.filename;
+
+            // 2. Modify event listener for archive items
+            listItem.addEventListener('click', (event) => {
+                playManualArchive(recording.filename, event.currentTarget); // Pass element for styling
+            });
+            archiveListElement.appendChild(listItem);
+        });
+
+        // After archive is loaded and processed:
+        // setupVideoPlayer() will be called, which should then call startAutoMode()
+        // This was the previous plan, ensure it still happens.
+        // The actual call to setupVideoPlayer() should be outside displayArchive,
+        // but called after displayArchive completes.
+        // For now, let's assume setupVideoPlayer (which calls startAutoMode) is called after displayArchive.
+
+    } catch (error) {
+        console.error('Failed to load or display archive:', error);
+        const errorLi = document.createElement('li');
+        errorLi.textContent = 'Failed to load recordings.';
+        archiveListElement.appendChild(errorLi); // Append after "NOW" item
+    }
+
+    // The call to setupVideoPlayer() which in turn calls startAutoMode()
+    // should happen after displayArchive has successfully populated fullArchiveData.
+    // This will be handled by the modification to setupVideoPlayer step.
+    // For now, ensure displayArchive itself doesn't call it directly if it was moved out.
+    // The original plan: displayArchive calls setupVideoPlayer. Let's stick to that for now
+    // if setupVideoPlayer is light enough.
+    // If setupVideoPlayer was already calling startAutoMode, that's fine.
+    // Let's re-verify the call chain:
+    // DOMContentLoaded -> displayArchive() -> at the end of displayArchive, call setupVideoPlayer()
+    // setupVideoPlayer() (next step) will be modified to just call startAutoMode().
+    // This seems correct.
+    setupVideoPlayer(); // Ensure this is at the end of the try or after the try-catch.
+}
 
     // Helper function to get seconds into the current UTC hour
     function getSecondsIntoCurrentUTCHour() {
@@ -188,53 +425,13 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     }
 
-    function setupVideoPlayer() {
-        const videoPlayer = document.getElementById('main-video-player');
-        if (!videoPlayer) {
-            console.error("Video player element not found.");
-            return;
-        }
+// This function is called once after displayArchive successfully loads and processes archive data
+function setupVideoPlayer() {
+    console.log("Initial setup of video player complete. Starting Auto Mode.");
+    // Any other one-time video player setup can go here if needed in the future (e.g. volume, events)
 
-        // Simulate checking if the live stream is active
-        // In a real scenario, this could involve trying to fetch the stream manifest
-        // or checking an API endpoint. For now, we'll rely on LIVE_STREAM_URL being non-empty.
-        const isLiveStreamActive = LIVE_STREAM_URL && LIVE_STREAM_URL !== "";
-
-        if (isLiveStreamActive) {
-            console.log(`Attempting to play live stream: ${LIVE_STREAM_URL}`);
-            if (videoPlayer.canPlayType('application/vnd.apple.mpegurl')) { // Basic HLS check
-                videoPlayer.src = LIVE_STREAM_URL;
-            } else if (videoPlayer.canPlayType('application/rtmp/mp4')) { // Basic RTMP check (though direct browser RTMP is rare)
-                 videoPlayer.src = LIVE_STREAM_URL;
-            }
-            else {
-                videoPlayer.src = LIVE_STREAM_URL; // General case
-            }
-            videoPlayer.load(); // Important to load the new source
-            videoPlayer.play().catch(e => console.error("Error playing live stream:", e));
-        } else {
-            console.log("Live stream not active or URL not set. Using archive fallback.");
-            if (fullArchiveData && fullArchiveData.length > 0) {
-                const secondsNow = getSecondsIntoCurrentUTCHour();
-                const playbackInfo = getPlaybackForSecond(secondsNow, fullArchiveData);
-
-                if (playbackInfo && playbackInfo.recording) {
-                    const sourceUrl = `recordings/${playbackInfo.recording.filename}#t=${playbackInfo.offset}`;
-                    console.log(`Setting archive video source to: ${sourceUrl}`);
-                    videoPlayer.src = sourceUrl;
-                    videoPlayer.load();
-                    videoPlayer.play().catch(e => console.error("Error playing archive video:", e));
-                } else {
-                    console.error("Could not determine archive video to play.");
-                    videoPlayer.poster = 'path/to/default_poster_error.jpg'; // Optional: set a poster indicating an error
-                }
-            } else {
-                console.warn("No archive data available for fallback.");
-                // Optional: display a message or set a specific poster
-                // videoPlayer.poster = 'path/to/default_poster_no_archive.jpg';
-            }
-        }
-    }
+    startAutoMode(); // Default to auto mode on page load
+}
 
     // Call displayArchive when the page loads
     displayArchive();

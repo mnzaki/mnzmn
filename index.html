@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Broadcast</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>Live Stream</h1>
+    </header>
+    <main>
+        <section id="video-player-section">
+            <video id="main-video-player" controls autoplay muted playsinline>
+                <!-- Source will be set by JavaScript -->
+            </video>
+        </section>
+        <section id="archive-section">
+            <h2>Previous Recordings</h2>
+            <ul id="archive-list">
+                <!-- Archive items will be populated by JavaScript -->
+            </ul>
+        </section>
+    </main>
+    <footer>
+        <p>&copy; <span id="current-year"></span> Your Broadcast Channel</p>
+    </footer>
+    <script src="app.js"></script>
+</body>
+</html>

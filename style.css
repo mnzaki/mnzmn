@@ -1,0 +1,78 @@
+body, html {
+    margin: 0;
+    padding: 0;
+    font-family: sans-serif;
+    background-color: #f0f0f0;
+    color: #333;
+}
+
+header {
+    background-color: #333;
+    color: #fff;
+    padding: 1em;
+    text-align: center;
+}
+
+main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 1em;
+}
+
+#video-player-section {
+    width: 100%;
+    max-width: 960px; /* Max width of video player */
+    margin-bottom: 2em;
+    background-color: #000; /* Black background for the video area */
+}
+
+#main-video-player {
+    width: 100%;
+    height: auto; /* Maintain aspect ratio */
+    display: block; /* Remove extra space below video */
+}
+
+#archive-section {
+    width: 100%;
+    max-width: 960px; /* Match video player width */
+}
+
+#archive-section h2 {
+    border-bottom: 2px solid #ccc;
+    padding-bottom: 0.5em;
+    margin-bottom: 0.5em;
+}
+
+#archive-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    max-height: 400px; /* Example max height, make it scrollable */
+    overflow-y: auto; /* Scroll for overflow */
+    border: 1px solid #ddd;
+    background-color: #fff;
+}
+
+#archive-list li {
+    padding: 0.75em 1em;
+    border-bottom: 1px solid #eee;
+    font-size: 0.9em;
+}
+
+#archive-list li:last-child {
+    border-bottom: none;
+}
+
+#archive-list li:hover {
+    background-color: #f9f9f9;
+}
+
+footer {
+    text-align: center;
+    padding: 1em;
+    background-color: #333;
+    color: #fff;
+    font-size: 0.8em;
+    margin-top: 2em;
+}

@@ -1,0 +1,8 @@
+# Configuration files with potentially sensitive information
+config.json
+
+# Other common ignores (optional, but good practice)
+node_modules/
+dist/
+*.log
+.env

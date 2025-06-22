@@ -136,19 +136,26 @@ document.addEventListener('DOMContentLoaded', async function() {
             });
         }
 
-        function playManualArchive(recordingFilename, listItemElement) {
-            console.log(`Switching to MANUAL_ARCHIVE mode. Playing: ${recordingFilename}`);
+        function playManualArchive(sourceIdentifier, listItemElement, isAbsoluteUrl = false) {
+            console.log(`Switching to MANUAL_ARCHIVE mode. Identifier: ${sourceIdentifier}, IsAbsolute: ${isAbsoluteUrl}`);
             currentMode = 'MANUAL_ARCHIVE';
+
             if (liveCheckIntervalId) {
                 clearInterval(liveCheckIntervalId);
                 liveCheckIntervalId = null;
                 console.log("Cleared live check interval due to manual selection.");
             }
-            const sourceUrl = `recordings/${recordingFilename}`;
-            setVideoPlayerSource(sourceUrl, true);
+
+            const videoSrc = isAbsoluteUrl ? sourceIdentifier : `recordings/${sourceIdentifier}`;
+            setVideoPlayerSource(videoSrc, true); // Treat GDrive links as "archive" type for now
+
             const archiveListItems = document.querySelectorAll('#archive-list li');
-            archiveListItems.forEach(item => item.classList.remove('active-list-item'));
-            if (listItemElement) listItemElement.classList.add('active-list-item');
+            archiveListItems.forEach(item => {
+                item.classList.remove('active-list-item');
+            });
+            if (listItemElement) {
+                listItemElement.classList.add('active-list-item');
+            }
         }
 
         function sfc32(a, b, c, d) {
@@ -189,6 +196,76 @@ document.addEventListener('DOMContentLoaded', async function() {
 
         initializePrngWithCurrentHour(); // Initialize PRNG after its definition
 
+        async function fetchDriveArchive(folderId, apiKey) {
+            if (!folderId) {
+                console.error("Google Drive fetch: folderId is missing.");
+                throw new Error("Google Drive folderId is not configured.");
+            }
+            if (!apiKey) {
+                console.error("Google Drive fetch: apiKey is missing.");
+                throw new Error("Google Drive API key is not configured.");
+            }
+
+            const archiveItems = [];
+            const query = `'${folderId}' in parents and mimeType contains 'video/' and trashed = false`;
+            const fields = 'files(id, name, webViewLink, webContentLink, thumbnailLink, createdTime, modifiedTime, description, mimeType, properties, appProperties)';
+            const orderBy = 'name';
+            const apiUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&orderBy=${encodeURIComponent(orderBy)}&key=${apiKey}`;
+
+            console.log(`Fetching GDrive archive from folder: ${folderId}`);
+
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => null);
+                    console.error("Google Drive API Error:", response.status, response.statusText, errorData);
+                    throw new Error(`Google Drive API request failed: ${response.status} ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                if (data.files && data.files.length > 0) {
+                    for (const file of data.files) {
+                        if (file.mimeType === 'application/vnd.google-apps.folder') {
+                            continue;
+                        }
+
+                        let title = file.name;
+                        const extIndex = title.lastIndexOf('.');
+                        if (extIndex > 0) {
+                            title = title.substring(0, extIndex);
+                        }
+                        title = title.replace(/[_-]/g, ' ').replace(/\s\s+/g, ' ').trim();
+
+                        const timestamp = new Date(file.createdTime).toISOString();
+                        const videoSrcUrl = file.webContentLink || file.webViewLink;
+                        if (!videoSrcUrl) {
+                            console.warn(`No playable/viewable link found for Drive file: ${file.name} (ID: ${file.id}). Skipping.`);
+                            continue;
+                        }
+
+                        archiveItems.push({
+                            id: file.id,
+                            filename: file.name,
+                            title: title,
+                            timestamp: timestamp,
+                            duration: 0,
+                            thumbnail_reel_url: file.thumbnailLink || '',
+                            videoSrcUrl: videoSrcUrl,
+                            sourceType: 'gdrive'
+                        });
+                    }
+                } else {
+                    console.log("No video files found in the specified Google Drive folder.");
+                }
+                console.log(`Fetched ${archiveItems.length} items from Google Drive.`);
+                return archiveItems;
+
+            } catch (error) {
+                console.error("Error in fetchDriveArchive:", error);
+                throw error;
+            }
+        }
+
         function getPlaybackForHour(archive) {
             if (!archive || archive.length === 0) return null;
             if (typeof prngForHour !== 'function') initializePrngWithCurrentHour();
@@ -214,12 +291,18 @@ document.addEventListener('DOMContentLoaded', async function() {
             archiveListElement.appendChild(nowPlayingItem);
 
             let archiveData = [];
+            let uiMessage = '';
+            let messageType = 'info'; // 'info', 'warn', 'error'
 
             try {
                 const archiveSourceUri = appConfig.ARCHIVE_SOURCE;
                 console.log("Attempting to load archive from:", archiveSourceUri);
 
-                if (archiveSourceUri && archiveSourceUri.startsWith('file://')) {
+                if (!archiveSourceUri) {
+                    throw new Error("ARCHIVE_SOURCE is not defined in config.json.");
+                }
+
+                if (archiveSourceUri.startsWith('file://')) {
                     const filePath = archiveSourceUri.substring('file://.'.length);
                     const response = await fetch(filePath);
                     if (!response.ok) {
@@ -228,13 +311,28 @@ document.addEventListener('DOMContentLoaded', async function() {
                     archiveData = await response.json();
                     console.log("Archive data loaded from local file:", archiveData);
 
-                } else if (archiveSourceUri && archiveSourceUri.startsWith('gdrive://')) {
-                    console.warn(`Google Drive source detected ('${archiveSourceUri}'), but GDrive fetching is not yet implemented.`);
-                    archiveData = [];
-                    const gdriveErrorLi = document.createElement('li');
-                    gdriveErrorLi.textContent = 'Google Drive archive source not yet supported.';
-                    gdriveErrorLi.style.color = 'orange';
-                    archiveListElement.appendChild(gdriveErrorLi);
+                } else if (archiveSourceUri.startsWith('gdrive://')) {
+                    if (!appConfig.GDRIVE_FOLDER_ID || !appConfig.GDRIVE_API_KEY) {
+                        console.error("Google Drive configuration (GDRIVE_FOLDER_ID or GDRIVE_API_KEY) is missing in config.json.");
+                        throw new Error("Google Drive is selected as source, but not fully configured in config.json (missing GDrive Folder ID or API Key).");
+                    }
+                    const loadingLi = document.createElement('li');
+                    loadingLi.textContent = 'Loading recordings from Google Drive...';
+                    loadingLi.id = 'gdrive-loading-message';
+                    archiveListElement.appendChild(loadingLi);
+
+                    archiveData = await fetchDriveArchive(appConfig.GDRIVE_FOLDER_ID, appConfig.GDRIVE_API_KEY);
+
+                    const loadingMessageElement = document.getElementById('gdrive-loading-message');
+                    if (loadingMessageElement) {
+                        archiveListElement.removeChild(loadingMessageElement);
+                    }
+
+                    if (archiveData.length === 0) {
+                        uiMessage = 'No video files found in the configured Google Drive folder.';
+                        messageType = 'warn';
+                    }
+                    console.log("Archive data loaded from Google Drive:", archiveData);
 
                 } else {
                     throw new Error(`Unsupported or invalid ARCHIVE_SOURCE URI: ${archiveSourceUri}`);
@@ -248,29 +346,49 @@ document.addEventListener('DOMContentLoaded', async function() {
                 fullArchiveData = [...archiveData].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
                 const displaySortedArchive = [...archiveData].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-                displaySortedArchive.forEach(recording => {
-                    const listItem = document.createElement('li');
-                    listItem.classList.add('clickable');
-                    const date = new Date(recording.timestamp);
-                    const formattedTimestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-                    listItem.textContent = `${formattedTimestamp} - ${recording.title}`;
-                    listItem.dataset.filename = recording.filename;
-                    listItem.addEventListener('click', (event) => {
-                        playManualArchive(recording.filename, event.currentTarget);
+                if (archiveData.length > 0) {
+                    displaySortedArchive.forEach(recording => {
+                        const listItem = document.createElement('li');
+                        listItem.classList.add('clickable');
+                        const date = new Date(recording.timestamp);
+                        const formattedTimestamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+                        listItem.textContent = `${formattedTimestamp} - ${recording.title}`;
+
+                        listItem.dataset.sourceType = recording.sourceType || 'local';
+                        listItem.dataset.id = recording.id || recording.filename;
+
+                        listItem.addEventListener('click', (event) => {
+                            const source = event.currentTarget.dataset.sourceType;
+                            const identifier = event.currentTarget.dataset.id;
+                            if (source === 'gdrive') {
+                                const gdriveRecording = fullArchiveData.find(r => r.id === identifier && r.sourceType === 'gdrive');
+                                if (gdriveRecording && gdriveRecording.videoSrcUrl) {
+                                    playManualArchive(gdriveRecording.videoSrcUrl, event.currentTarget, true);
+                                }
+                            } else {
+                                playManualArchive(identifier, event.currentTarget, false);
+                            }
+                        });
+                        archiveListElement.appendChild(listItem);
                     });
-                    archiveListElement.appendChild(listItem);
-                });
+                }
 
             } catch (error) {
                 console.error('Failed to load or display archive:', error);
-                const errorLi = document.createElement('li');
-                errorLi.textContent = `Error loading recordings: ${error.message}`;
-                errorLi.style.color = 'red';
-                archiveListElement.appendChild(errorLi);
+                uiMessage = `Error loading recordings: ${error.message}`;
+                messageType = 'error';
                 fullArchiveData = [];
             }
 
-            // setupVideoPlayer() is called at the end of DOMContentLoaded try block
+            if (uiMessage) {
+                const messageLi = document.createElement('li');
+                messageLi.textContent = uiMessage;
+                if (messageType === 'warn') messageLi.style.color = 'orange';
+                if (messageType === 'error') messageLi.style.color = 'red';
+                archiveListElement.appendChild(messageLi);
+            }
+
         }
 
         function getSecondsIntoCurrentUTCHour() {
